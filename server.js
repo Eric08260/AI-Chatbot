@@ -22,8 +22,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Serve the frontend
 app.use(express.static(join(__dirname, 'public')));
 
-// Parse JSON bodies
-app.use(express.json());
+// Parse JSON bodies (20 MB limit for base64 file uploads)
+app.use(express.json({ limit: '20mb' }));
 
 // Proxy endpoint
 app.post('/api/chat', async (req, res) => {
