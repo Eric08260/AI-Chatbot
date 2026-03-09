@@ -205,6 +205,17 @@
       text-align: center;
     }
 
+    .sidebar-footer a {
+      color: var(--text-faint);
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .sidebar-footer a:hover {
+      color: var(--text-secondary);
+      text-decoration: underline;
+    }
+
     /* ── Mobile sidebar toggle ── */
     .sidebar-toggle {
       display: none;
@@ -810,7 +821,10 @@
         <button id="new-chat-btn">+ New Chat</button>
       </div>
       <div class="conversation-list" id="conversation-list"></div>
-      <div class="sidebar-footer">Powered by Gemini</div>
+      <div class="sidebar-footer">
+        Powered by Gemini<br>
+        <a id="api-key-link" href="#">⚙ API Key Settings</a>
+      </div>
     </aside>
 
     <main class="chat-container">
@@ -840,13 +854,67 @@
   </div>
 
   <script>
-    // Guard: must be served via the Express server, not opened as a file
-    if (location.protocol === 'file:') {
-      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#f87171;font-family:sans-serif;text-align:center;padding:2rem"><div><h2>⚠️ Cannot open directly</h2><p>Run <code>npm start</code> and visit <strong>http://localhost:3000</strong></p></div></div>';
-      throw new Error('Page must be served via http://localhost:3000');
+    // ── Backend detection ──
+    // If the Express proxy is available use it; otherwise call Gemini directly
+    const IS_LOCALHOST = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    const PROXY_URL = '/api/chat';
+    const GEMINI_MODEL = 'gemini-2.5-flash';
+    const GEMINI_DIRECT_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+    const API_KEY_STORAGE = 'chatbot_api_key';
+
+    function getApiKey() {
+      return localStorage.getItem(API_KEY_STORAGE) || '';
     }
 
-    const API_URL = '/api/chat';
+    function promptApiKey() {
+      const current = getApiKey();
+      const key = prompt(
+        'Enter your Google Gemini API key:\n(Get one free at https://aistudio.google.com/apikey)',
+        current
+      );
+      if (key !== null) {
+        localStorage.setItem(API_KEY_STORAGE, key.trim());
+      }
+      return key !== null && key.trim().length > 0;
+    }
+
+    // Central fetch helper — uses proxy on localhost, direct API on GitHub Pages
+    async function callGemini(contents) {
+      if (IS_LOCALHOST) {
+        const res = await fetch(PROXY_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.error?.message || `API error ${res.status}`);
+        }
+        return res.json();
+      }
+
+      // Direct mode (GitHub Pages)
+      let apiKey = getApiKey();
+      if (!apiKey) {
+        if (!promptApiKey()) throw new Error('API key is required to use this chatbot.');
+        apiKey = getApiKey();
+      }
+      const res = await fetch(`${GEMINI_DIRECT_URL}?key=${encodeURIComponent(apiKey)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        const msg = err.error?.message || `API error ${res.status}`;
+        if (res.status === 400 || res.status === 403) {
+          localStorage.removeItem(API_KEY_STORAGE);
+          throw new Error(msg + ' (Invalid API key — click ⚙ in sidebar to update)');
+        }
+        throw new Error(msg);
+      }
+      return res.json();
+    }
 
     const chatWindow = document.getElementById('chat-window');
     const chatForm = document.getElementById('chat-form');
@@ -860,6 +928,13 @@
     const fileInput = document.getElementById('file-input');
     const attachBtn = document.getElementById('attach-btn');
     const filePreviewStrip = document.getElementById('file-preview-strip');
+    const apiKeyLink = document.getElementById('api-key-link');
+
+    // API Key settings link
+    apiKeyLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      promptApiKey();
+    });
 
     const STORAGE_KEY = 'chatbot_conversations';
     const ACTIVE_KEY = 'chatbot_active_id';
@@ -1219,18 +1294,7 @@
       const time = getTimestamp();
 
       try {
-        const response = await fetch(API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: conv.history }),
-        });
-
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.error?.message || `API error ${response.status}`);
-        }
-
-        const data = await response.json();
+        const data = await callGemini(conv.history);
         const aiText =
           data.candidates?.[0]?.content?.parts?.[0]?.text
           || 'Sorry, I could not generate a response.';
@@ -1307,18 +1371,7 @@
       conv.history.push({ role: 'user', parts: [{ text: 'Please continue from where you left off.' }] });
 
       try {
-        const response = await fetch(API_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: conv.history }),
-        });
-
-        if (!response.ok) {
-          const err = await response.json();
-          throw new Error(err.error?.message || `API error ${response.status}`);
-        }
-
-        const data = await response.json();
+        const data = await callGemini(conv.history);
         const contText =
           data.candidates?.[0]?.content?.parts?.[0]?.text || '';
         const finishReason = data.candidates?.[0]?.finishReason;
