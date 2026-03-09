@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
   <title>AI Chatbot</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
@@ -76,7 +76,9 @@
       justify-content: center;
       align-items: center;
       min-height: 100vh;
+      min-height: 100dvh;
       background: var(--bg-page);
+      overflow: hidden;
     }
 
     /* ── App Wrapper ── */
@@ -674,6 +676,28 @@
       background: rgba(239, 68, 68, 0.25);
     }
 
+    .continue-btn {
+      background: rgba(99, 102, 241, 0.15);
+      color: #818cf8;
+      border: 1px solid rgba(99, 102, 241, 0.3);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      cursor: pointer;
+      margin-left: 8px;
+      transition: background 0.2s;
+    }
+
+    .continue-btn:hover {
+      background: rgba(99, 102, 241, 0.25);
+    }
+
+    .continue-btn:disabled {
+      opacity: 0.5;
+      cursor: default;
+    }
+
     .error-text {
       color: #f87171;
     }
@@ -688,6 +712,8 @@
       .app-wrapper {
         width: 100%;
         height: 100vh;
+        height: 100dvh;
+        height: var(--vh, 100dvh);
         border-radius: 0;
         box-shadow: none;
         position: relative;
@@ -699,6 +725,7 @@
         left: -280px;
         width: 280px;
         height: 100vh;
+        height: 100dvh;
         z-index: 100;
         transition: left 0.25s ease;
         box-shadow: 4px 0 20px rgba(0, 0, 0, 0.5);
@@ -813,6 +840,12 @@
   </div>
 
   <script>
+    // Guard: must be served via the Express server, not opened as a file
+    if (location.protocol === 'file:') {
+      document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#f87171;font-family:sans-serif;text-align:center;padding:2rem"><div><h2>⚠️ Cannot open directly</h2><p>Run <code>npm start</code> and visit <strong>http://localhost:3000</strong></p></div></div>';
+      throw new Error('Page must be served via http://localhost:3000');
+    }
+
     const API_URL = '/api/chat';
 
     const chatWindow = document.getElementById('chat-window');
@@ -1201,6 +1234,7 @@
         const aiText =
           data.candidates?.[0]?.content?.parts?.[0]?.text
           || 'Sorry, I could not generate a response.';
+        const finishReason = data.candidates?.[0]?.finishReason;
 
         conv.history.push({ role: 'model', parts: [{ text: aiText }] });
 
@@ -1221,6 +1255,20 @@
         ts.textContent = time;
         footer.appendChild(ts);
         footer.appendChild(createCopyBtn(aiText));
+
+        // If response was truncated, show a Continue button
+        if (finishReason === 'MAX_TOKENS') {
+          const continueBtn = document.createElement('button');
+          continueBtn.classList.add('continue-btn');
+          continueBtn.textContent = 'Continue ↗';
+          continueBtn.addEventListener('click', () => {
+            continueBtn.disabled = true;
+            continueBtn.textContent = 'Continuing…';
+            continueResponse(conv, thinkingMsg, wrapper, footer, continueBtn);
+          });
+          footer.appendChild(continueBtn);
+        }
+
         wrapper.appendChild(footer);
 
         conv.messages.push({ sender: 'bot', text: aiText, time });
@@ -1248,6 +1296,67 @@
         });
         footer.appendChild(retryBtn);
         wrapper.appendChild(footer);
+      }
+
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+    }
+
+    // ── Continue truncated response ──
+    async function continueResponse(conv, msgEl, wrapper, footer, continueBtn) {
+      // Ask the model to continue from where it left off
+      conv.history.push({ role: 'user', parts: [{ text: 'Please continue from where you left off.' }] });
+
+      try {
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: conv.history }),
+        });
+
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error?.message || `API error ${response.status}`);
+        }
+
+        const data = await response.json();
+        const contText =
+          data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        const finishReason = data.candidates?.[0]?.finishReason;
+
+        conv.history.push({ role: 'model', parts: [{ text: contText }] });
+
+        // Append the continuation to the existing message
+        const lastMsg = conv.messages[conv.messages.length - 1];
+        lastMsg.text += contText;
+
+        // Re-render the full combined text
+        msgEl.innerHTML = DOMPurify.sanitize(marked.parse(lastMsg.text));
+
+        // Update the copy button to copy the full text
+        const oldCopy = footer.querySelector('.copy-btn');
+        if (oldCopy) oldCopy.replaceWith(createCopyBtn(lastMsg.text));
+
+        // Remove the used continue button
+        continueBtn.remove();
+
+        // If still truncated, add a new continue button
+        if (finishReason === 'MAX_TOKENS') {
+          const newContinueBtn = document.createElement('button');
+          newContinueBtn.classList.add('continue-btn');
+          newContinueBtn.textContent = 'Continue ↗';
+          newContinueBtn.addEventListener('click', () => {
+            newContinueBtn.disabled = true;
+            newContinueBtn.textContent = 'Continuing…';
+            continueResponse(conv, msgEl, wrapper, footer, newContinueBtn);
+          });
+          footer.appendChild(newContinueBtn);
+        }
+
+        saveAll();
+      } catch (error) {
+        conv.history.pop(); // remove the "continue" user message
+        continueBtn.textContent = 'Continue ↗';
+        continueBtn.disabled = false;
       }
 
       chatWindow.scrollTop = chatWindow.scrollHeight;
@@ -1301,6 +1410,14 @@
     }
     renderSidebar();
     renderActiveChat();
+
+    // Mobile: keep layout fitted when virtual keyboard opens
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => {
+        document.documentElement.style.setProperty('--vh', window.visualViewport.height + 'px');
+      });
+      document.documentElement.style.setProperty('--vh', window.visualViewport.height + 'px');
+    }
   </script>
 
 </body>
